@@ -1,0 +1,13 @@
+name: rosetta_pipelines
+channels:
+  - conda-forge
+dependencies:
+  - python=3.12
+  - pip
+  - pip:
+      # PyRosetta is not on standard PyPI. `pyrosetta-installer` is RosettaCommons' official helper:
+      # it fetches the correct wheel for this platform/Python. PyRosetta requires a (free for
+      # academics) license — see https://www.pyrosetta.org/home/licensing-pyrosetta.
+      - pyrosetta-installer
+      # The package itself (no runtime deps beyond PyRosetta).
+      - .

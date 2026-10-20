@@ -1,0 +1,32 @@
+[build-system]
+requires = ["setuptools>=64"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "rosetta_pipelines"
+# Version is single-sourced from rosetta_pipelines/__init__.py (__version__); see
+# [tool.setuptools.dynamic] below. Bump it there.
+dynamic = ["version"]
+description = "Small, self-contained PyRosetta pipelines: structure relaxation, sequence threading, and interface analysis."
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "MIT" }
+# Runtime code uses only the Python standard library plus PyRosetta. PyRosetta is NOT on the standard
+# PyPI index and cannot be resolved by `pip install .`, so it is installed separately (see README /
+# the Makefile `env` target) rather than listed here.
+dependencies = []
+
+[project.optional-dependencies]
+dev = ["pytest>=7"]
+
+[project.scripts]
+rosetta-interface-analyzer = "rosetta_pipelines.interface:main"
+
+[tool.setuptools.dynamic]
+version = { attr = "rosetta_pipelines.__version__" }
+
+[tool.setuptools.packages.find]
+include = ["rosetta_pipelines*"]
+
+[tool.black]
+line-length = 99
