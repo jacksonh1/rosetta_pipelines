@@ -243,3 +243,78 @@ def thread_and_relax(
     return _finish(
         best, out_pdb, params=params, metrics=metrics, formed=formed, n_threaded=len(changed), t0=t0
     )
+
+
+def _relax_terminus_region(pose, chain_id, added_start, added_end, *, relax_scope, **run_kwargs):
+    """Restrained FastRelax of a terminus edit: settle just the added residues (``relax_scope="added"``)
+    or the whole chain (``"chain"``), with NO neighbor shell (the addition sits at a chain end). Returns
+    ``(best_pose, metrics)`` from the relax primitive; ``run_kwargs`` are its engine knobs."""
+    sel = pyrosetta.rosetta.core.select.residue_selector
+    if relax_scope == "chain":
+        focus = sel.ChainSelector(chain_id)
+    elif relax_scope == "added":
+        focus = sel.ResidueIndexSelector()
+        for idx in range(added_start, added_end + 1):
+            focus.append_index(idx)
+    else:
+        raise ValueError(f"relax_scope must be 'added' or 'chain', got {relax_scope!r}")
+    mmf, prevent = fr.movemap_for_mobile(focus, 0.0)  # no shell: the addition is at a chain end
+    return fr.run_fastrelax_trajectories(
+        pose, movemap_factory=mmf, prevent_selector=prevent, **run_kwargs
+    )
+
+
+def extend_terminus(
+    pdb_path: str | Path,
+    chain_id: str,
+    add_seq: str,
+    end: str,
+    out_pdb: str | Path,
+    *,
+    params: RelaxParams | None = None,
+    relax_scope: str = "chain",
+    disulfide_pairs: list[DisulfidePair] | None = None,
+) -> RelaxResult:
+    """Add ``add_seq`` to the ``end`` (``"N"`` or ``"C"``) terminus of ``chain_id``, then relax it.
+
+    ``end="C"`` appends (the chain's existing numbering is preserved, new residues continue past the
+    last resnum); ``end="N"`` prepends (the chain is renumbered continuously from 1). ``relax_scope``
+    settles only the added residues (``"added"``) or the whole chain (``"chain"``, the default), with
+    no neighbor shell either way — the addition is at a chain end. ``"chain"`` is the default because
+    the strain of the new terminal peptide bond sits on the *neighbouring* existing residue, which
+    ``"added"`` scope would keep frozen.
+
+    Any ``disulfide_pairs`` (PDB numbering) are (re)formed before packing. The coordinate restraint
+    (``params.coord_cst_weight``) holds the pre-existing structure near the template while the addition
+    is accommodated. Writes ``out_pdb`` with the terminus PDBInfo (chain ids / residue numbers)
+    preserved. ``params.neighbor_dist`` is not used here (there is no shell)."""
+    params = params or RelaxParams()
+    end = end.upper()
+    rosetta_init.ensure_init()
+    _assert_cartesian_consistent(params)
+    t0 = time.time()
+    pose = pt.load_pose(pdb_path, ignore_zero_occupancy=params.ignore_zero_occupancy)
+    if end == "C":
+        added_start, added_end = pt.add_cterminus_residues(pose, chain_id, add_seq)
+    elif end == "N":
+        added_start, added_end = pt.add_nterminus_residues(pose, chain_id, add_seq)
+    else:
+        raise ValueError(f"end must be 'N' or 'C', got {end!r}")
+    formed = None
+    if disulfide_pairs is not None:
+        formed = pt.add_disulfides_from_chain_positions(pose, disulfide_pairs)
+    best, metrics = _relax_terminus_region(
+        pose, chain_id, added_start, added_end, relax_scope=relax_scope, **params.traj_kwargs()
+    )
+    # A terminus edit leaves non-sequential chain/resnum on the PDBInfo, so write via the
+    # PDBInfo-preserving writer (not _finish's plain dump_pdb, which would relabel chains A,B,C…).
+    Path(out_pdb).parent.mkdir(parents=True, exist_ok=True)
+    pt.write_pose_preserving_pdbinfo(best, out_pdb)
+    return RelaxResult(
+        out_pdb=str(out_pdb),
+        params=params,
+        formed_disulfides=formed,
+        n_threaded=None,
+        wall_seconds=time.time() - t0,
+        **metrics,
+    )

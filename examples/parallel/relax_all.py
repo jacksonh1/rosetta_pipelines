@@ -2,7 +2,7 @@
 """Relax every PDB in a directory in parallel, each worker writing its own output.
 
 Usage:
-    python examples/relax_all.py <input_dir> <output_dir> [--workers N]
+    python relax_all.py <input_dir> <output_dir> [--workers N]
 
 Demonstrates the two `spawn` requirements: the worker function (`relax_one`) is defined at module
 level, and the launch is guarded by `if __name__ == "__main__":`.

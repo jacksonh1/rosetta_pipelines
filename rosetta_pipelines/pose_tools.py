@@ -226,3 +226,144 @@ def thread_sequence_onto_chain(
         rosetta.protocols.simple_moves.MutateResidue(idx, ONE_TO_THREE[aa]).apply(pose)
         changed.append(idx)
     return changed
+
+
+# ---- terminus extension (add residues to a chain end) ----
+
+
+def add_nterminus_residues(pose, chain_id: str, seq: str) -> tuple[int, int]:
+    """Prepend ``seq`` to the N-terminus of ``chain_id`` in-place; rebuild the PDBInfo; return the
+    (start, end) pose indices of the added residues.
+
+    RENUMBERS the target chain continuously from 1 (the first prepended residue becomes resnum 1), so
+    the caller must re-derive sequence/disulfides from the resulting pose rather than carry the
+    parent's numbering. Pure pose surgery — no relax, no write."""
+    seq = seq.strip().upper()
+    if not seq:
+        raise ValueError("prepend sequence must be non-empty")
+    info = pose.pdb_info()
+    original_chain_map = {}  # pose_idx -> (chain, resnum, icode), captured before mutation
+    if info:
+        for i in range(1, pose.total_residue() + 1):
+            original_chain_map[i] = (info.chain(i), info.number(i), info.icode(i))
+
+    chain_indices = chain_indices_from_pdbinfo(pose, chain_id)
+    chain_start = chain_indices[0]
+    target_pose_chain = pose.chain(chain_start)
+
+    rts = pose.residue_type_set_for_pose()
+    for aa in reversed(seq):
+        if aa not in ONE_TO_THREE:
+            raise ValueError(f"Unsupported residue code '{aa}'")
+        restype = rts.name_map(ONE_TO_THREE[aa])
+        new_res = rosetta.core.conformation.ResidueFactory.create_residue(restype)
+        pose.prepend_polymer_residue_before_seqpos(new_res, chain_start, True)
+
+    # Prepending corrupts the PDBInfo; rebuild it. i<chain_start: unchanged (chains before target);
+    # chain_start..+n-1: the new residues (target chain, renumbered from 1); rest: shifted by +n, with
+    # the target chain renumbered continuously and other chains restored from the original map.
+    n_added = len(seq)
+    info = pose.pdb_info()
+    if info is not None:
+        for i in range(1, pose.total_residue() + 1):
+            if i < chain_start:
+                orig_chain, orig_resnum, orig_icode = original_chain_map[i]
+                info.set_resinfo(i, orig_chain, orig_resnum, orig_icode)
+            elif i < chain_start + n_added:
+                info.set_resinfo(i, chain_id, i - chain_start + 1, " ")
+            else:
+                orig_idx = i - n_added
+                orig_chain, orig_resnum, orig_icode = original_chain_map[orig_idx]
+                if orig_chain == chain_id:
+                    info.set_resinfo(i, chain_id, i - chain_start + 1, " ")
+                else:
+                    info.set_resinfo(i, orig_chain, orig_resnum, orig_icode)
+
+    target_chain_indices = [
+        i for i in range(1, pose.total_residue() + 1) if pose.chain(i) == target_pose_chain
+    ]
+    return target_chain_indices[0], target_chain_indices[n_added - 1]
+
+
+def add_cterminus_residues(pose, chain_id: str, seq: str) -> tuple[int, int]:
+    """Append ``seq`` to the C-terminus of ``chain_id`` in-place; rebuild the PDBInfo; return the
+    (start, end) pose indices of the added residues.
+
+    Numbering is PRESERVED (added residues continue past the last resnum), so a caller can carry the
+    parent's per-residue annotations forward. Pure pose surgery — no relax, no write."""
+    seq = seq.strip().upper()
+    if not seq:
+        raise ValueError("append sequence must be non-empty")
+    info = pose.pdb_info()
+    original_chain_map = {}  # pose_idx -> (chain, resnum, icode), captured before mutation
+    if info:
+        for i in range(1, pose.total_residue() + 1):
+            original_chain_map[i] = (info.chain(i), info.number(i), info.icode(i))
+
+    chain_indices = chain_indices_from_pdbinfo(pose, chain_id)
+    original_chain_end = chain_indices[-1]
+    original_chain_last_resnum = original_chain_map[original_chain_end][1]
+
+    rts = pose.residue_type_set_for_pose()
+    current_end = original_chain_end  # track the growing C-terminus
+    for aa in seq:
+        if aa not in ONE_TO_THREE:
+            raise ValueError(f"Unsupported residue code '{aa}'")
+        restype = rts.name_map(ONE_TO_THREE[aa])
+        new_res = rosetta.core.conformation.ResidueFactory.create_residue(restype)
+        pose.append_polymer_residue_after_seqpos(new_res, current_end, True)
+        current_end += 1
+
+    # <=original_chain_end: unchanged; +1..+n: the new residues (numbering continues from the last
+    # original resnum); rest: post-target chains shifted by +n, restored from the original map.
+    n_added = len(seq)
+    info = pose.pdb_info()
+    if info is not None:
+        for i in range(1, pose.total_residue() + 1):
+            if i <= original_chain_end:
+                orig_chain, orig_resnum, orig_icode = original_chain_map[i]
+                info.set_resinfo(i, orig_chain, orig_resnum, orig_icode)
+            elif i <= original_chain_end + n_added:
+                info.set_resinfo(
+                    i, chain_id, original_chain_last_resnum + (i - original_chain_end), " "
+                )
+            else:
+                orig_idx = i - n_added
+                orig_chain, orig_resnum, orig_icode = original_chain_map[orig_idx]
+                info.set_resinfo(i, orig_chain, orig_resnum, orig_icode)
+
+    return original_chain_end + 1, original_chain_end + n_added
+
+
+def write_pose_preserving_pdbinfo(pose, out_pdb: str | Path) -> None:
+    """Write ``pose`` to ``out_pdb`` with its PDBInfo chain IDs / residue numbers preserved.
+
+    ``pose.dump_pdb`` ignores PDBInfo and relabels chains A,B,C… sequentially, so the dump is re-read
+    and each atom's chain/resnum rewritten from the PDBInfo (mapped by pose index). Needed after a
+    terminus edit, which leaves non-sequential chain/residue numbering on the PDBInfo."""
+    temp_pdb = tempfile.NamedTemporaryFile(mode="w", delete=False, suffix=".pdb")
+    temp_pdb.close()
+    pose.dump_pdb(temp_pdb.name)
+    info = pose.pdb_info()
+    # (dump_chain, dump_resnum) -> pose index, in first-seen order (pose order)
+    dump_residues = []
+    with open(temp_pdb.name, "r") as f:
+        for line in f:
+            if line.startswith("ATOM") or line.startswith("HETATM"):
+                key = (line[21], int(line[22:26].strip()))
+                if key not in [r[0] for r in dump_residues]:
+                    dump_residues.append((key, len(dump_residues) + 1))
+    residue_map = {
+        key: (info.chain(pose_idx), info.number(pose_idx)) for key, pose_idx in dump_residues
+    }
+    with open(temp_pdb.name, "r") as f_in:
+        lines = f_in.readlines()
+    with open(str(out_pdb), "w") as f_out:
+        for line in lines:
+            if line.startswith("ATOM") or line.startswith("HETATM"):
+                key = (line[21], int(line[22:26].strip()))
+                correct_chain, correct_resnum = residue_map.get(key, key)
+                f_out.write(line[:21] + correct_chain + f"{correct_resnum:4d}" + line[26:])
+            else:
+                f_out.write(line)
+    os.unlink(temp_pdb.name)

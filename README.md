@@ -7,6 +7,7 @@ a plain Python function that takes a PDB file and returns a typed result:
 |-----------|----------|--------------|
 | **Structure relaxation** | `relax_structure` | Coordinate-restrained FastRelax of a structure, optionally scoped to one chain plus a neighbor shell. |
 | **Sequence threading** | `thread_and_relax` | Thread a new sequence onto one chain (backbone preserved, sidechains rebuilt), then relax. |
+| **Terminus extension** | `extend_terminus` | Add residues to a chain's N- or C-terminus, then relax the addition. |
 | **Interface analysis** | `run_interface_analyzer` | Pack-separated binding ΔG and interface descriptors for a two-partner complex. |
 
 A process-pool helper (`rosetta_pipelines.pool.run_pool`) runs any of these across many structures in
@@ -84,6 +85,8 @@ result = relax_structure(
 )
 ```
 
+A complete, runnable relaxation demo lives in [`examples/relaxation/`](examples/relaxation/).
+
 Form disulfides before relaxing (PDB numbering, `((chain, resnum), (chain, resnum))`):
 
 ```python
@@ -113,6 +116,25 @@ print("positions mutated:", result.n_threaded)
 A complete, runnable threading demo (poly-lysine onto a peptide chain, with a PDB included) lives in
 [`examples/threading/`](examples/threading/).
 
+### Extend a terminus (add residues to a chain end)
+
+```python
+from rosetta_pipelines import extend_terminus, RelaxParams
+
+result = extend_terminus(
+    "peptide.pdb",
+    chain_id="C",
+    add_seq="GGY",             # residues to add
+    end="C",                   # "C" appends (numbering preserved); "N" prepends (chain renumbered from 1)
+    out_pdb="extended.pdb",
+    params=RelaxParams(nstruct=3),
+    relax_scope="chain",       # "chain" (default) relaxes the whole chain; "added" only the new residues
+)
+```
+
+There is no neighbor shell (the addition sits at a chain end), and the output keeps its PDBInfo chain
+IDs / residue numbers. A complete, runnable demo lives in [`examples/terminus/`](examples/terminus/).
+
 ### Analyze an interface
 
 ```python
@@ -135,10 +157,13 @@ rosetta-interface-analyzer --pdb complex.pdb --receptor A --peptide B
 python -m rosetta_pipelines.interface --pdb complex.pdb --receptor A --peptide B
 ```
 
+A complete, runnable interface demo lives in [`examples/interface/`](examples/interface/).
+
 ### Run across many structures in parallel
 
-See `examples/relax_all.py` for a complete, runnable driver. The worker function must be defined at
-module level and the launch guarded by `if __name__ == "__main__":` (both are `spawn` requirements).
+See [`examples/parallel/`](examples/parallel/) for a complete, runnable driver. The worker function
+must be defined at module level and the launch guarded by `if __name__ == "__main__":` (both are
+`spawn` requirements).
 
 ```python
 from rosetta_pipelines.pool import run_pool
@@ -179,3 +204,15 @@ These defaults encode some non-obvious PyRosetta details:
 make test       # run the test suite
 make format     # black, line length 99
 ```
+
+---
+
+## License
+
+This project's code is released under the [MIT License](LICENSE).
+
+**PyRosetta is not included or redistributed here** — it is a separate, required dependency with its
+own license. PyRosetta is distributed by RosettaCommons and is free for academic/non-commercial use;
+commercial use requires a license from the University of Washington. You must obtain PyRosetta and
+agree to its terms separately: <https://www.pyrosetta.org/home/licensing-pyrosetta>. The MIT license
+on this code grants no rights to PyRosetta.
